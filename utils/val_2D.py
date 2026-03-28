@@ -150,6 +150,22 @@ def test_single_volume_UPL(image, label, net, classes, patch_size=[256, 256]):
             prediction == i, label == i))
     return metric_list
 
+def test_single_volume_chaos(image, label, net, classes=5,
+                             patch_size=[256, 256],
+                             organ_names=("Liver", "R.Kidney", "L.Kidney", "Spleen")):
+    """
+    Evaluate a 3D volume on a multi-class model (e.g. CHAOS 5-class).
+    Returns a list of (dice, hd95, assd) tuples, one per foreground class.
+    Also prints per-organ metrics.
+    """
+    metrics = test_single_volume(image, label, net, classes=classes,
+                                 patch_size=patch_size)
+    for i, name in enumerate(organ_names):
+        d, h, a = metrics[i]
+        print(f"  {name:12s}: Dice={d:.4f}  HD95={h:.2f}  ASSD={a:.2f}")
+    return metrics
+
+
 def test_single_volume_DPL(image, label, net, classes, patch_size=[256, 256]):
     image, label = image.squeeze(0).cpu().detach(
     ).numpy(), label.squeeze(0).cpu().detach().numpy()
