@@ -11,10 +11,11 @@
 set -e  # 出错即停
 
 # -------- 用户配置 (修改这里) --------
-DATA_DIR="./datasets/ABDOMINAL/processed_DDFP"   # processed_DDFP 根目录 (含 metadata.json)
+DATA_DIR="/workspace/REBOUND/datasets/ABDOMINAL/processed_DDFP"   # processed_DDFP 根目录 (含 metadata.json)
 DOMAIN="CHAOST2"                                  # 目标域名称
-SOURCE_MODEL=""                                   # 源域预训练模型路径 (.pth)
-SAM_CHECKPOINT=""                                 # MedSAM 检查点路径 (.pth)
+SOURCE_MODEL="/workspace/MemProp-SFDA/results/ABDOMINAL/BTCV_to_BTCV/source_pretrain_UNet_1/checkpoints/best_checkpoint.pth"                                   # 源域预训练模型路径 (.pth)
+SAM_CHECKPOINT="/workspace/SRPL-SFDA/sam_ckpt/sam_vit_b_01ec64.pth"                                 # MedSAM 检查点路径 (.pth)
+MEMPROP_DIR="/workspace/MemProp-SFDA"             # MemProp-SFDA 根目录（用于加载其 UNet 架构）
 GPU="0"
 NUM_CLASSES=5
 PATCH_SIZE=256
@@ -53,19 +54,19 @@ echo "[Stage 1-1] Histogram equalization + source model inference..."
 CUDA_VISIBLE_DEVICES=$GPU python $SCRIPT_DIR/1_1_image_trans_equal.py \
     --data_dir "$DATA_DIR" --domain "$DOMAIN" \
     --source_model "$SOURCE_MODEL" --num_classes $NUM_CLASSES \
-    --patch_size $PATCH_SIZE --gpu "$GPU"
+    --patch_size $PATCH_SIZE --gpu "$GPU" --memprop_dir "$MEMPROP_DIR"
 
 echo "[Stage 1-2] Gamma-dark (γ=0.6) + source model inference..."
 CUDA_VISIBLE_DEVICES=$GPU python $SCRIPT_DIR/1_2_image_trans_rD.py \
     --data_dir "$DATA_DIR" --domain "$DOMAIN" \
     --source_model "$SOURCE_MODEL" --num_classes $NUM_CLASSES \
-    --patch_size $PATCH_SIZE --gpu "$GPU"
+    --patch_size $PATCH_SIZE --gpu "$GPU" --memprop_dir "$MEMPROP_DIR"
 
 echo "[Stage 1-3] Gamma-bright (γ=1.4) + source model inference..."
 CUDA_VISIBLE_DEVICES=$GPU python $SCRIPT_DIR/1_3_image_trans_rS.py \
     --data_dir "$DATA_DIR" --domain "$DOMAIN" \
     --source_model "$SOURCE_MODEL" --num_classes $NUM_CLASSES \
-    --patch_size $PATCH_SIZE --gpu "$GPU"
+    --patch_size $PATCH_SIZE --gpu "$GPU" --memprop_dir "$MEMPROP_DIR"
 
 echo "[Stage 1-4] Average 3 predictions → pseudo-label + uncertainty map..."
 python $SCRIPT_DIR/1_4_average_pl_uncertainty.py \
@@ -91,7 +92,8 @@ CUDA_VISIBLE_DEVICES=$GPU python $SCRIPT_DIR/3_train_RPL_selectRPL_fine_tune.py 
     --T_fix $T_FIX \
     --base_lr $LR_3 \
     --exp chaos_rpl_ft \
-    --gpu "$GPU"
+    --gpu "$GPU" \
+    --memprop_dir "$MEMPROP_DIR"
 
 # After stage 3, use the best model for stage 4
 STAGE3_BEST="../../results/chaos_rpl/chaos_rpl_ft/${DOMAIN}/iters${MAX_ITER_3}_lr${LR_3}_T${T_FIX}/unet2d_best_model.pth"
@@ -107,7 +109,8 @@ CUDA_VISIBLE_DEVICES=$GPU python $SCRIPT_DIR/4_train_RPL_selectRPL_add_EM_fine_t
     --lameta_fix $LAMBDA_4 \
     --base_lr $LR_4 \
     --exp chaos_rpl_em \
-    --gpu "$GPU"
+    --gpu "$GPU" \
+    --memprop_dir "$MEMPROP_DIR"
 
 echo "============================================================"
 echo "  SRPL-SFDA CHAOS pipeline completed!"

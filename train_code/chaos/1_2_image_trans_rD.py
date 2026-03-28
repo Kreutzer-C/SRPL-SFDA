@@ -13,7 +13,7 @@ import torch
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, ROOT)
-from networks.net_factory import net_factory
+from utils.model_utils import build_model_from_checkpoint
 
 
 def parse_args():
@@ -26,6 +26,7 @@ def parse_args():
     p.add_argument("--gamma", type=float, default=0.6,
                    help="Gamma < 1 brightens the image (dark-corrected)")
     p.add_argument("--gpu", type=str, default="0")
+    p.add_argument("--memprop_dir", type=str, default="/workspace/MemProp-SFDA")
     return p.parse_args()
 
 
@@ -59,9 +60,9 @@ def main():
     with open(os.path.join(args.data_dir, "metadata.json")) as f:
         json.load(f)  # validate metadata exists
 
-    net = net_factory("unet2d", in_chns=1, class_num=args.num_classes)
-    net.load_state_dict(torch.load(args.source_model, map_location="cuda:0"))
-    net.eval()
+    net = build_model_from_checkpoint(
+        args.source_model, args.num_classes, memprop_dir=args.memprop_dir
+    )
 
     src_dir = os.path.join(args.data_dir, args.domain, "slices")
     out_dir = os.path.join(args.data_dir, args.domain, "slices_pred_rD")

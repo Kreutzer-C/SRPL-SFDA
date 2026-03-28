@@ -33,7 +33,7 @@ sys.path.insert(0, ROOT)
 from dataloaders.chaos_dataset_RPL_selectRPL_UMviaEntropy import (
     ChaosSliceDataset, ChaosVolDataset, TrainToTensor, load_metadata,
 )
-from networks.net_factory import net_factory
+from utils.model_utils import build_model_from_checkpoint
 from utils.losses import WeightedCrossEntropyLoss, WeightedDiceLoss, WeightedEMLoss
 from utils.val_2D import test_single_volume
 
@@ -60,6 +60,8 @@ parser.add_argument("--patch_size", type=int, nargs=2, default=[256, 256])
 parser.add_argument("--seed", type=int, default=2024)
 parser.add_argument("--deterministic", type=int, default=1)
 parser.add_argument("--gpu", type=str, default="0")
+parser.add_argument("--memprop_dir", type=str, default="/workspace/MemProp-SFDA",
+                    help="MemProp-SFDA root dir (needed when source_model is MemProp-style)")
 args = parser.parse_args()
 
 
@@ -74,8 +76,10 @@ def train(args, snapshot_path, metadata):
     threshold = args.threshold
     lameta_fix = args.lameta_fix
 
-    model = net_factory(net_type=args.net, in_chns=1, class_num=num_classes)
-    model.load_state_dict(torch.load(args.source_model, map_location="cuda:0"))
+    model = build_model_from_checkpoint(
+        args.source_model, num_classes, memprop_dir=args.memprop_dir
+    )
+    model.train()
 
     db_train = ChaosSliceDataset(
         base_dir=args.data_dir,

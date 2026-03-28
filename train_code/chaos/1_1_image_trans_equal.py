@@ -14,7 +14,7 @@ import torch
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, ROOT)
-from networks.net_factory import net_factory
+from utils.model_utils import build_model_from_checkpoint
 
 
 def parse_args():
@@ -27,6 +27,8 @@ def parse_args():
     p.add_argument("--num_classes", type=int, default=5)
     p.add_argument("--patch_size", type=int, default=256)
     p.add_argument("--gpu", type=str, default="0")
+    p.add_argument("--memprop_dir", type=str, default="/workspace/MemProp-SFDA",
+                   help="MemProp-SFDA root dir (needed when source_model is MemProp-style)")
     return p.parse_args()
 
 
@@ -70,10 +72,10 @@ def main():
     with open(meta_path) as f:
         metadata = json.load(f)
 
-    # Build model
-    net = net_factory("unet2d", in_chns=1, class_num=args.num_classes)
-    net.load_state_dict(torch.load(args.source_model, map_location="cuda:0"))
-    net.eval()
+    # Build model (auto-detects SRPL vs MemProp architecture)
+    net = build_model_from_checkpoint(
+        args.source_model, args.num_classes, memprop_dir=args.memprop_dir
+    )
 
     src_dir = os.path.join(args.data_dir, args.domain, "slices")
     out_dir = os.path.join(args.data_dir, args.domain, "slices_pred_equal")
