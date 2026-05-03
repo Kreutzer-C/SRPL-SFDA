@@ -1,7 +1,7 @@
 import json
 from collections import OrderedDict
 
-from codesfda.augmentations.ctaugment import *
+from .ctaugment import *
 
 
 class StorableCTAugment(CTAugment):
