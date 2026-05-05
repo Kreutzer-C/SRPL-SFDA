@@ -93,7 +93,7 @@ def train():
     iter_num = 0
     max_epoch = args.max_iterations // len(trainloader) + 1
     best_performance = 0.0
-    final_threshold = args.threshold * 0.69315
+    final_threshold = args.threshold
 
     for epoch_num in range(1, max_epoch + 1):
         for batch in tqdm(trainloader, desc=f'Epoch {epoch_num}/{max_epoch}', ncols=70):
@@ -110,7 +110,7 @@ def train():
             loss_ce = ce_loss(outputs, labels.long(), reliable_mask)
             loss_dice = dice_loss(outputs_soft, labels.unsqueeze(1), weight_map=reliable_mask)
             sup_loss = 0.5 * (loss_dice + loss_ce)
-            em_loss = WeightedEMLoss(outputs_soft, unreliable_mask)
+            em_loss = WeightedEMLoss(outputs_soft, unreliable_mask, C=NUM_CLASSES)
             loss = sup_loss + args.lameta_fix * em_loss
 
             optimizer.zero_grad()

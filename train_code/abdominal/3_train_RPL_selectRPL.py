@@ -93,7 +93,7 @@ def train():
     iter_num = 0
     max_epoch = args.max_iterations // len(trainloader) + 1
     best_performance = 0.0
-    threshold = args.T_fix * 0.69315
+    threshold = args.T_fix
 
     for epoch_num in range(1, max_epoch + 1):
         for batch in tqdm(trainloader, desc=f'Epoch {epoch_num}/{max_epoch}', ncols=70):
