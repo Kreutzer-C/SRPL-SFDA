@@ -34,6 +34,28 @@ h5py, GeodisTK, medpy, SimpleITK, nibabel, scipy, opencv-python, tqdm, tensorboa
 pip install segment-anything h5py GeodisTK medpy SimpleITK nibabel opencv-python tqdm tensorboardX
 ```
 
+## UNet Architecture (v2 — MemProp-aligned)
+
+The UNet has been upgraded to match MemProp-SFDA's architecture for cross-project
+checkpoint compatibility.
+
+| Property | v1 (old) | v2 (current) |
+|----------|----------|--------------|
+| Feature channels | [16, 32, 64, 128, 256] | **[64, 128, 256, 512, 1024]** |
+| Parameters | ~1.9M | **~31.0M** |
+| Activation | LeakyReLU | ReLU (inplace) |
+| Dropout | 0.05~0.5 (encoder) | None |
+| Output conv | Conv2d k=3 | Conv2d k=1 |
+| Size handling | Power-of-2 only | F.pad for arbitrary sizes |
+| MemProp-compatible | No | **Yes** |
+
+Source-only baseline improvement with v2 UNet:
+
+| Direction | v1 UNet (1.9M) | v2 UNet (31M) |
+|-----------|:--------------:|:-------------:|
+| BTCV → CHAOST2 | 0.462 | **0.774** |
+| CHAOST2 → BTCV | 0.364 | **0.586** |
+
 ## Method Overview
 
 SRPL-SFDA (SAM-guided Reliable Pseudo-Labels for Source-Free Domain Adaptation) is a
@@ -86,19 +108,37 @@ cd /opt/data/private/SRPL-SFDA
 export PYTHONPATH=$PWD:$PYTHONPATH
 
 # CT → MR (default)
-bash run_abdominal.sh
-# or equivalently:
 bash run_btcv2chaost2.sh
 
 # MR → CT (reverse)
 bash run_chaost22btcv.sh
 ```
 
+### Using MemProp Pre-trained Source Models
+
+MemProp-SFDA source models are fully compatible. Set `--source_model` to the
+MemProp checkpoint path in Phase 1-3:
+
+```bash
+# BTCV source model from MemProp → adapt to CHAOST2
+python train_code/abdominal/1_1_intensity_enhancement.py \
+    --source_domain BTCV \
+    --source_model /opt/data/private/MemProp-SFDA/results/ABDOMINAL/BTCV_to_BTCV/source_pretrain_UNet_1/checkpoints/best_checkpoint.pth \
+    --output_dir data/ABDOMINAL/BTCV2CHAOST2/enhanced_pl \
+    --split train
+
+# CHAOST2 source model from MemProp → adapt to BTCV
+python train_code/abdominal/1_1_intensity_enhancement.py \
+    --source_domain CHAOST2 \
+    --source_model /opt/data/private/MemProp-SFDA/results/ABDOMINAL/CHAOST2_to_CHAOST2/source_pretrain_UNet_5/checkpoints/epoch_0_dice_0.7180.pth \
+    --output_dir data/ABDOMINAL/CHAOST22BTCV/enhanced_pl \
+    --split train
+```
+
 ## Step-by-Step Execution
 
 All scripts accept `--source_domain BTCV` or `--source_domain CHAOST2` to control
-the adaptation direction. The direction determines which dataset is source vs target
-and where outputs are saved.
+the adaptation direction.
 
 ### Phase 0: Source Model Training
 
@@ -116,8 +156,8 @@ python train_code/abdominal/0_source_train.py \
     --max_epochs 100
 ```
 
-Trains a UNet (in_chns=1, class_num=5) on the source domain with Dice+CE loss.
-Saves checkpoints to `results/{SOURCE}2{TARGET}/source_model/`.
+Trains a UNet (in_chns=1, class_num=5, first_channels=64) on the source domain
+with Dice+CE loss. Saves checkpoints to `results/{SOURCE}2{TARGET}/source_model/`.
 
 ### Phase 1: Tri-branch Intensity Enhancement + Ensemble
 
@@ -188,11 +228,20 @@ Adds entropy minimization on unreliable regions:
 
 ### Evaluation
 
+`test_metrics.py` supports both raw `state_dict` and MemProp's
+`{'model_state_dict': ...}` wrapper format (auto-detected).
+
 ```bash
 # Source-only (baseline, no adaptation)
 python train_code/abdominal/test_metrics.py \
     --source_domain BTCV \
     --model_path results/BTCV2CHAOST2/source_model/best_model.pth \
+    --domain target --split test
+
+# MemProp source model (auto-detected checkpoint format)
+python train_code/abdominal/test_metrics.py \
+    --source_domain BTCV \
+    --model_path /opt/data/private/MemProp-SFDA/results/ABDOMINAL/BTCV_to_BTCV/source_pretrain_UNet_1/checkpoints/best_checkpoint.pth \
     --domain target --split test
 
 # Step 3 (RPL ablation)
@@ -233,6 +282,22 @@ pseudo-label quality on this 5-class task (Dice drops 15-35% across all organs).
 The SAM step is therefore excluded from this reproduction. The ensemble pseudo-labels
 from Phase 1 are used directly for RPL training.
 
+## MemProp-SFDA Source Model Benchmarks
+
+Pre-trained source models from MemProp-SFDA, evaluated with this project's UNet (v2):
+
+| Model | On Source | On Target | Gap |
+|-------|:---------:|:---------:|:---:|
+| BTCV source | 0.894 (BTCV) | 0.774 (CHAOST2) | 0.12 |
+| CHAOST2 source | 0.874 (CHAOST2) | 0.586 (BTCV) | 0.29 |
+
+**Per-class breakdown on target domain:**
+
+| Model | Liver | R.Kidney | L.Kidney | Spleen |
+|-------|:-----:|:--------:|:--------:|:------:|
+| BTCV → CHAOST2 | 0.677 | 0.850 | 0.833 | 0.737 |
+| CHAOST2 → BTCV | 0.722 | 0.585 | 0.554 | 0.483 |
+
 ## Directory Structure
 
 ```
@@ -262,6 +327,7 @@ data/ABDOMINAL/
 
 | Parameter | Value | Phase | Description |
 |-----------|-------|:-----:|-------------|
+| `first_channels` | 64 | All | UNet base channels (MemProp-aligned) |
 | `T_fix` | 0.5 | Step 3 | Entropy threshold = T_fix × ln(C) |
 | `threshold` | 0.6 | Step 4 | Reliability threshold |
 | `lameta_fix` | 0.1 | Step 4 | EM loss weight |
@@ -277,13 +343,19 @@ data/ABDOMINAL/
 SRPL-SFDA/
 ├── dataloaders/
 │   └── abdominal_dataset.py            # ABDOMINAL npz dataloader (bidirectional)
+├── networks/
+│   ├── unet.py                         # UNet v2 (31M, MemProp-compatible)
+│   ├── unet_old.py                     # UNet v1 backup (1.9M, deprecated)
+│   └── net_factory.py                  # net_factory with first_channels support
 ├── train_code/
 │   └── abdominal/
 │       ├── 0_source_train.py           # Phase 0: source model training
 │       ├── 1_1_intensity_enhancement.py # Phase 1: tri-branch enhancement + ensemble
+│       ├── 2_medsam_bbox_refine.py     # Phase 2: MedSAM bbox refinement (experimental)
 │       ├── 3_train_RPL_selectRPL.py    # Phase 2: RPL selection + fine-tune
 │       ├── 4_train_RPL_add_EM.py       # Phase 3: RPL + entropy minimization
 │       └── test_metrics.py             # Evaluation (Dice, HD95, ASSD)
+├── eval_memprop_source.py              # Standalone MemProp source model evaluator
 ├── datasets/datasets/ABDOMINAL/
 │   └── processed_DDFP/                 # npz slices + metadata.json
 ├── data/ABDOMINAL/
@@ -291,7 +363,6 @@ SRPL-SFDA/
 │   ├── CHAOST22BTCV/enhanced_pl/       # Phase 1 output (MR→CT)
 │   └── data_split/                     # Train/val/test split info
 ├── results/                            # Training outputs (per-direction)
-├── run_abdominal.sh                    # Default pipeline (BTCV→CHAOST2)
 ├── run_btcv2chaost2.sh                 # CT→MR pipeline
 ├── run_chaost22btcv.sh                 # MR→CT pipeline
 └── README_ABDOMINAL.md                 # This file
@@ -300,4 +371,5 @@ SRPL-SFDA/
 ## Reference
 
 - Original SRPL-SFDA code: `train_code/fetal_brain/` (unchanged)
+- MemProp-SFDA: `/opt/data/private/MemProp-SFDA/` (UNet architecture source)
 - SAM: [facebookresearch/segment-anything](https://github.com/facebookresearch/segment-anything)

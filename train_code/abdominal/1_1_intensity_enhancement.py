@@ -25,6 +25,14 @@ from scipy.optimize import minimize
 ROOT = '/opt/data/private/SRPL-SFDA'
 sys.path.insert(0, ROOT)
 
+def load_source_checkpoint(model, path):
+    ckpt = torch.load(path, map_location='cuda:0')
+    if 'model_state_dict' in ckpt:
+        model.load_state_dict(ckpt['model_state_dict'])
+    else:
+        model.load_state_dict(ckpt)
+    return model
+
 from networks.net_factory import net_factory
 from dataloaders.abdominal_dataset import NUM_CLASSES
 
@@ -146,7 +154,7 @@ def generate():
 
     # Load source model
     model = net_factory(net_type='unet2d', in_chns=1, class_num=NUM_CLASSES)
-    model.load_state_dict(torch.load(args.source_model, map_location='cuda:0'))
+    model = load_source_checkpoint(model, args.source_model)
     model.cuda()
     model.eval()
 

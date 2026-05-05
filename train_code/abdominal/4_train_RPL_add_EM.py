@@ -16,6 +16,14 @@ import torch.backends.cudnn as cudnn
 ROOT = '/opt/data/private/SRPL-SFDA'
 sys.path.insert(0, ROOT)
 
+def load_source_checkpoint(model, path):
+    ckpt = torch.load(path, map_location='cuda:0')
+    if 'model_state_dict' in ckpt:
+        model.load_state_dict(ckpt['model_state_dict'])
+    else:
+        model.load_state_dict(ckpt)
+    return model
+
 from networks.net_factory import net_factory
 from utils.losses import WeightedDiceLoss, WeightedCrossEntropyLoss, WeightedEMLoss
 from dataloaders.abdominal_dataset import AbdominalDataset, NUM_CLASSES
@@ -75,7 +83,7 @@ def train():
     logging.info(str(args))
 
     model = net_factory(net_type='unet2d', in_chns=1, class_num=NUM_CLASSES)
-    model.load_state_dict(torch.load(args.source_model, map_location='cuda:0'))
+    model = load_source_checkpoint(model, args.source_model)
 
     db_train = AbdominalDataset(split="train", domain="target", patch_size=tuple(args.patch_size),
                                 pseudo_label_dir=args.pseudo_label_dir, source_domain_key=SOURCE_KEY)

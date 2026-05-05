@@ -1,177 +1,162 @@
 # -*- coding: utf-8 -*-
-from __future__ import print_function, division
 """
-The implementation is borrowed from: https://github.com/HiLab-git/PyMIC
-"""
+UNet upgraded to MemProp-SFDA alignment.
 
-import numpy as np
+Compatible with:
+  - MemProp-SFDA checkpoints (identical architecture & state-dict keys)
+  - SRPL-SFDA existing callers: UNet(in_chns=..., class_num=...)
+
+Based on MemProp-SFDA /networks/unet_modeling.py
+"""
 import torch
 import torch.nn as nn
-from torch.distributions.uniform import Uniform
-    
-class ConvBlock(nn.Module):
-    """two convolution layers with batch norm and leaky relu"""
+import torch.nn.functional as F
 
-    def __init__(self, in_channels, out_channels, dropout_p):
-        super(ConvBlock, self).__init__()
-        self.conv_conv = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+
+class DoubleConv(nn.Module):
+    """(convolution => BN => ReLU) * 2"""
+
+    def __init__(self, in_channels, out_channels, mid_channels=None):
+        super().__init__()
+        if not mid_channels:
+            mid_channels = out_channels
+        self.double_conv = nn.Sequential(
+            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
-            nn.LeakyReLU(),
-            nn.Dropout(dropout_p),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.LeakyReLU()
+            nn.ReLU(inplace=True),
         )
 
     def forward(self, x):
-        return self.conv_conv(x)
+        return self.double_conv(x)
 
 
-class DownBlock(nn.Module):
-    """Downsampling followed by ConvBlock"""
+class Down(nn.Module):
+    """Downscaling with maxpool then double conv"""
 
-    def __init__(self, in_channels, out_channels, dropout_p):
-        super(DownBlock, self).__init__()
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
         self.maxpool_conv = nn.Sequential(
             nn.MaxPool2d(2),
-            ConvBlock(in_channels, out_channels, dropout_p)
-
+            DoubleConv(in_channels, out_channels),
         )
 
     def forward(self, x):
         return self.maxpool_conv(x)
 
 
-class UpBlock(nn.Module):
-    """Upssampling followed by ConvBlock"""
+class Up(nn.Module):
+    """Upscaling then double conv"""
 
-    def __init__(self, in_channels1, in_channels2, out_channels, dropout_p,
-                 bilinear=True):
-        super(UpBlock, self).__init__()
-        self.bilinear = bilinear
+    def __init__(self, in_channels, out_channels, bilinear=True):
+        super().__init__()
         if bilinear:
-            self.conv1x1 = nn.Conv2d(in_channels1, in_channels2, kernel_size=1)
-            self.up = nn.Upsample(
-                scale_factor=2, mode='bilinear', align_corners=True)
+            self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+            self.conv = DoubleConv(in_channels, out_channels, in_channels // 2)
         else:
-            self.up = nn.ConvTranspose2d(
-                in_channels1, in_channels2, kernel_size=2, stride=2)
-        self.conv = ConvBlock(in_channels2 * 2, out_channels, dropout_p)
+            self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
+            self.conv = DoubleConv(in_channels, out_channels)
 
     def forward(self, x1, x2):
-        if self.bilinear:
-            x1 = self.conv1x1(x1)
         x1 = self.up(x1)
+        # handle non-power-of-2 sizes
+        diffY = x2.size()[2] - x1.size()[2]
+        diffX = x2.size()[3] - x1.size()[3]
+        x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
+                        diffY // 2, diffY - diffY // 2])
         x = torch.cat([x2, x1], dim=1)
         return self.conv(x)
 
 
-class Encoder(nn.Module):
-    def __init__(self, params):
-        super(Encoder, self).__init__()
-        self.params = params
-        self.in_chns = self.params['in_chns']
-        self.ft_chns = self.params['feature_chns']
-        self.n_class = self.params['class_num']
-        self.bilinear = self.params['bilinear']
-        self.dropout = self.params['dropout']
-        assert (len(self.ft_chns) == 5)
-        self.in_conv = ConvBlock(
-            self.in_chns, self.ft_chns[0], self.dropout[0])
-        self.down1 = DownBlock(
-            self.ft_chns[0], self.ft_chns[1], self.dropout[1])
-        self.down2 = DownBlock(
-            self.ft_chns[1], self.ft_chns[2], self.dropout[2])
-        self.down3 = DownBlock(
-            self.ft_chns[2], self.ft_chns[3], self.dropout[3])
-        self.down4 = DownBlock(
-            self.ft_chns[3], self.ft_chns[4], self.dropout[4])
+class OutConv(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(OutConv, self).__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
 
     def forward(self, x):
-        x0 = self.in_conv(x)
-        x1 = self.down1(x0)
-        x2 = self.down2(x1)
-        x3 = self.down3(x2)
-        x4 = self.down4(x3)
-        return [x0, x1, x2, x3, x4]
+        return self.conv(x)
 
-
-class Decoder(nn.Module):
-    def __init__(self, params):
-        super(Decoder, self).__init__()
-        self.params = params
-        self.in_chns = self.params['in_chns']
-        self.ft_chns = self.params['feature_chns']
-        self.n_class = self.params['class_num']
-        self.bilinear = self.params['bilinear']
-        assert (len(self.ft_chns) == 5)
-
-        self.up1 = UpBlock(
-            self.ft_chns[4], self.ft_chns[3], self.ft_chns[3], dropout_p=0.0)
-        self.up2 = UpBlock(
-            self.ft_chns[3], self.ft_chns[2], self.ft_chns[2], dropout_p=0.0)
-        self.up3 = UpBlock(
-            self.ft_chns[2], self.ft_chns[1], self.ft_chns[1], dropout_p=0.0)
-        self.up4 = UpBlock(
-            self.ft_chns[1], self.ft_chns[0], self.ft_chns[0], dropout_p=0.0)
-
-        self.out_conv = nn.Conv2d(self.ft_chns[0], self.n_class,
-                                  kernel_size=3, padding=1)
-
-    def forward(self, feature):
-        x0 = feature[0]
-        x1 = feature[1]
-        x2 = feature[2]
-        x3 = feature[3]
-        x4 = feature[4]
-
-        x = self.up1(x4, x3)
-        x = self.up2(x, x2)
-        x = self.up3(x, x1)
-        x = self.up4(x, x0)
-        output = self.out_conv(x)
-        return output
-
-# def Dropout(x, p=0.3):
-#     x = torch.nn.functional.dropout(x, p)
-#     return x
 
 class UNet(nn.Module):
-    def __init__(self, in_chns, class_num):
+    """
+    UNet aligned with MemProp-SFDA.
+
+    Parameters (MemProp-style):
+        n_channels: input channels (default 1)
+        n_classes: output classes (default 5)
+        first_channels: base channel count (default 64 → [64,128,256,512,1024])
+        only_feature: return decoder features instead of logits
+        only_logits: return logits only (True); if False returns (features, logits)
+        bilinear: use bilinear upsampling instead of ConvTranspose2d
+
+    Parameters (SRPL-legacy, also accepted):
+        in_chns: alias for n_channels
+        class_num: alias for n_classes
+    """
+
+    def __init__(self, in_chns=None, class_num=None,
+                 n_channels=None, n_classes=None,
+                 first_channels=64, only_feature=False,
+                 only_logits=True, bilinear=False):
         super(UNet, self).__init__()
 
-        params = {'in_chns': in_chns,
-                  'feature_chns': [16, 32, 64, 128, 256],
-                  'dropout': [0.05, 0.1, 0.2, 0.3, 0.5],
-                  'class_num': class_num,
-                  'bilinear': False,
-                  'acti_func': 'relu'}
+        # Resolve legacy vs new parameter names
+        n_channels = n_channels if n_channels is not None else (in_chns if in_chns is not None else 1)
+        n_classes = n_classes if n_classes is not None else (class_num if class_num is not None else 5)
 
-        self.encoder = Encoder(params)
-        self.decoder = Decoder(params)
+        self.n_channels = n_channels
+        self.n_classes = n_classes
+        self.only_feature = only_feature
+        self.only_logits = only_logits
+        self.bilinear = bilinear
+
+        self.inc = DoubleConv(n_channels, first_channels)
+        self.down1 = Down(first_channels, first_channels * 2)
+        self.down2 = Down(first_channels * 2, first_channels * 4)
+        self.down3 = Down(first_channels * 4, first_channels * 8)
+        factor = 2 if bilinear else 1
+        self.down4 = Down(first_channels * 8, first_channels * 16 // factor)
+        self.up1 = Up(first_channels * 16, first_channels * 8 // factor, bilinear)
+        self.up2 = Up(first_channels * 8, first_channels * 4 // factor, bilinear)
+        self.up3 = Up(first_channels * 4, first_channels * 2 // factor, bilinear)
+        self.up4 = Up(first_channels * 2, first_channels, bilinear)
+        if not self.only_feature:
+            self.outc = OutConv(first_channels, n_classes)
 
     def forward(self, x):
-        feature = self.encoder(x)
-        output = self.decoder(feature)
-        return output
-
-""" 
-1 -> 16 -> 16 ————————————————————————————————————————————————————————————————————————————————————————————————————> 16 + (32/2) -> 16 -> 16 -> 2
-           |                                                                                                            |
-           16 -> 32 -> 32 ———————————————————————————————————————————————————————————————————————> 32 + (64/2) -> 32 -> 32
-                       |                                                                              |
-                       32 -> 64 -> 64 ————————————————————————————————————————> 64 + (128/2) -> 64 -> 64
-                                   |                                               |
-                                   64 -> 128 -> 128 ————> 128 + (256/2) -> 128 -> 128
-                                                |              |
-                                                128 -> 256 -> 256
-
-"""
-
+        x1 = self.inc(x)
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)
+        x5 = self.down4(x4)
+        x = self.up1(x5, x4)
+        x = self.up2(x, x3)
+        x = self.up3(x, x2)
+        x = self.up4(x, x1)
+        if self.only_feature:
+            return x
+        elif self.only_logits:
+            return self.outc(x)
+        else:
+            return x, self.outc(x)
 
 
+def build_unet(config_path, img_size=256, num_classes=5):
+    """Build UNet from a JSON config file (MemProp-compatible)."""
+    import json
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    return UNet(n_channels=config.get('in_channels', 1),
+                n_classes=num_classes,
+                first_channels=config.get('first_channels', 64),
+                only_feature=config.get('only_feature', False),
+                only_logits=config.get('only_logits', True),
+                bilinear=config.get('bilinear', False))
 
 
-
-
+if __name__ == "__main__":
+    model = UNet(n_channels=1, n_classes=5)
+    print(model)
+    print(f">>> Parameters: {sum(p.numel() for p in model.parameters()):,}")

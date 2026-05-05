@@ -2,14 +2,15 @@
 from __future__ import print_function, division
 
 from networks.unet import UNet
-import os,sys
+import os, sys
 root_path = os.getcwd()
-sys.path.insert(0,root_path)
+sys.path.insert(0, root_path)
 
-def net_factory(net_type="unet2d", in_chns=1, class_num=5):
+
+def net_factory(net_type="unet2d", in_chns=1, class_num=5, first_channels=64):
     if net_type == "unet2d":
-        net = UNet(in_chns=in_chns, class_num=class_num).cuda()
-
+        net = UNet(in_chns=in_chns, class_num=class_num,
+                   first_channels=first_channels).cuda()
     else:
         net = None
     return net
